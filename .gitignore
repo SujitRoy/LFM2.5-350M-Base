@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual envs
+venv/
+env/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data (large files)
+data/raw/
+data/validated/
+data/*.jsonl
+data/*.txt
+**/__pycache__/
+
+# Logs
+logs/tensorboard/
+logs/*.tfevents.*
+logs/evaluation_results.json
+
+# Models (binary, large)
+models/
+output/lcpt/
+output/sft_lora/checkpoint-*/
+output/lfm25-350m-hindi-merged/
+
+# HuggingFace cache (already global)
+.cache/huggingface/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env secrets
+.env
+.env.local
