@@ -4,7 +4,7 @@
 
 model_name_or_path: "LiquidAI/LFM2.5-350M-Base"
 dataset_path: "data/raw/tinystories_hi_lcpt.txt"
-lcpt_max_stories: 60000      # ~1-1.5h on T4; raise to 200000 for a longer run
+lcpt_max_stories: 30000      # ~55M tokens ≈ 1.5-2h on T4. Raise to 60000 (~110M tokens, 2.5-3.5h) for deeper fluency
 
 lora: false                   # 350M fits full-FT on T4 with grad checkpointing
 

@@ -78,11 +78,11 @@ md("""\
 **Why this matters (the key insight of this project):** the LFM2.5 tokenizer was not
 optimized for Devanagari — common Hindi words fragment into 4–17 tokens (English
 averages ~4 chars/token; Hindi here ~0.6). The base model has seen almost no Hindi,
-so SFT alone would produce broken grammar. LCPT on 60,000 natural Hindi stories
+so SFT alone would produce broken grammar. LCPT on 30,000 natural Hindi stories
 builds the missing fluency.
 
 **Config:** `configs/lcpt_config_t4.yaml` → fp16 (T4 has no bf16), 1 epoch,
-60K stories (~1–1.5 h on T4). Loss should drop from ~4 to under 2.5.
+30K stories (~90–120 min on T4). Loss should drop from ~4 to under 2.5.
 """)
 
 code("""\
@@ -92,7 +92,7 @@ code("""\
 
 code("""\
 # %%time
-# ~60–90 min on T4. Watch the loss fall — that's the model learning Hindi.
+# ~1.5–2h on T4 (30K stories ≈ 55M tokens). Watch the loss fall — that's the model learning Hindi.
 !python scripts/run_lcpt.py --config configs/lcpt_config_t4.yaml""")
 
 md("""\

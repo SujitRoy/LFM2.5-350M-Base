@@ -25,23 +25,61 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def load_text_corpus(path: str | Path) -> Dataset:
-    """Load newline-separated text lines into a Dataset."""
+def load_text_corpus(path: str | Path, max_stories: int | None = None, seed: int = 42) -> Dataset:
+    """Load newline-separated text lines into a Dataset.
+
+    Memory-aware: streams the file, reservoir-samples when max_stories is set,
+    so we never hold the full corpus in RAM.
+    """
+    import random as _random
+
+    rng = _random.Random(seed)
+    sample: list[str] = []
+    n_seen = 0
     with open(path, encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
-    return Dataset.from_dict({"text": lines})
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            n_seen += 1
+            if max_stories is None:
+                sample.append(line)          # no cap: grow (caller beware)
+            elif len(sample) < max_stories:
+                sample.append(line)
+            else:
+                j = rng.randrange(n_seen)     # reservoir sampling: uniform sample
+                if j < max_stories:
+                    sample[j] = line
+    logger.info(f"Corpus: kept {len(sample):,} of {n_seen:,} lines")
+    return Dataset.from_dict({"text": sample})
 
 
-def chunk_text(dataset: Dataset, tokenizer, max_len: int) -> Dataset:
-    """Chunk long texts into max_len-token segments."""
-    texts = []
+def chunk_text(dataset: Dataset, tokenizer, max_len: int, batch_size: int = 512) -> Dataset:
+    """Chunk long texts into max_len-token segments. Batched: uses the Rust
+    tokenizer's encode_batch (multi-threaded) instead of a per-text Python loop.
+    """
+    rust = getattr(tokenizer, "_tokenizer", None) or tokenizer
+    texts_out: list[str] = []
+    buf: list[str] = []
+
+    def flush():
+        if not buf:
+            return
+        encs = rust.encode_batch(buf)
+        for e in encs:
+            ids = e.ids if hasattr(e, "ids") else e["input_ids"]
+            for i in range(0, len(ids), max_len):
+                chunk = ids[i : i + max_len]
+                if len(chunk) >= 64:  # minimum useful chunk
+                    texts_out.append(rust.decode(chunk))
+        buf.clear()
+
     for doc in dataset["text"]:
-        encoded = tokenizer.encode(doc, truncation=False)
-        for i in range(0, len(encoded), max_len):
-            chunk = encoded[i : i + max_len]
-            if len(chunk) >= 64:  # minimum useful chunk
-                texts.append(tokenizer.decode(chunk))
-    return Dataset.from_dict({"text": texts})
+        buf.append(doc)
+        if len(buf) >= batch_size:
+            flush()
+    flush()
+    return Dataset.from_dict({"text": texts_out})
 
 
 def run_lcpt(config_path: str):
@@ -85,12 +123,9 @@ def run_lcpt(config_path: str):
         model.print_trainable_parameters()
 
     logger.info("Loading corpus...")
-    ds = load_text_corpus(cfg["dataset_path"])
     max_stories = cfg.get("lcpt_max_stories")
-    if max_stories is not None and len(ds) > max_stories:
-        ds = ds.shuffle(seed=cfg.get("seed", 42)).select(range(max_stories))
-        logger.info(f"Subsampled corpus to {max_stories} stories")
-    ds = chunk_text(ds, tokenizer, max_len)
+    ds = load_text_corpus(cfg["dataset_path"], max_stories=max_stories, seed=cfg.get("seed", 42))
+    ds = chunk_text(ds, tokenizer, max_len, batch_size=cfg.get("tokenize_batch_size", 512))
     logger.info(f"Corpus: {len(ds)} chunks")
 
     def tokenize_fn(examples):
