@@ -1,0 +1,33 @@
+# LEAP Finetune job: LFM2.5-1.2B-Base → Hindi/Hinglish SFT (LoRA)
+# Run:  uv run leap-finetune job_configs/sft_hindi_1.2b.yaml
+# Requires >= 16GB GPU VRAM for LoRA bf16; use QLoRA-style batch=1 + grad-accum on smaller.
+
+project_name: "lfm25_1.2b_hindi_hinglish"
+model_name: "LiquidAI/LFM2.5-1.2B-Base"
+training_type: "sft"
+
+dataset:
+  path: "data/leap/sft_hindi_hinglish_train.jsonl"
+  type: "sft"
+  test_size: 0.05
+
+training_config:
+  extends: "DEFAULT_SFT"
+  num_train_epochs: 3
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 16
+  learning_rate: 1.0e-4
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.05
+  max_length: 1024
+  bf16: true
+  eval_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 2
+
+peft_config:
+  extends: "DEFAULT_LORA"
+  use_peft: true
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05

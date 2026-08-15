@@ -18,7 +18,6 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments,
     set_seed,
 )
 from trl import SFTConfig, SFTTrainer
@@ -39,10 +38,8 @@ def load_jsonl_dataset(path: str | Path) -> Dataset:
 def format_chat_messages(examples: dict, tokenizer) -> dict:
     """Apply chat template to each example."""
     texts = []
-    for inst, inp, out in zip(
-        examples["instruction"], examples.get("input", [""] * len(examples["instruction"])),
-        examples["output"]
-    ):
+    inputs = examples.get("input", [""] * len(examples["instruction"]))
+    for inst, inp, out in zip(examples["instruction"], inputs, examples["output"]):
         msg = [
             {"role": "user", "content": f"{inst} {inp}".strip()},
             {"role": "assistant", "content": out},
@@ -57,33 +54,32 @@ def build_lora_config(cfg: dict) -> LoraConfig:
         lora_alpha=cfg.get("lora_alpha", 32),
         lora_dropout=cfg.get("lora_dropout", 0.05),
         task_type=TaskType.CAUSAL_LM,
-        target_modules=cfg.get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
+        target_modules=cfg.get("target_modules", [
+            "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.out_proj",
+            "feed_forward.w1", "feed_forward.w2", "feed_forward.w3",
+            "conv.in_proj", "conv.out_proj",
+        ]),
     )
 
 
-def build_training_args(cfg: dict) -> TrainingArguments:
-    return TrainingArguments(
-        output_dir=str(Path(cfg["output_dir"]) / "training"),
-        num_train_epochs=cfg.get("num_train_epochs", 3),
-        per_device_train_batch_size=cfg.get("per_device_train_batch_size", 4),
-        gradient_accumulation_steps=cfg.get("gradient_accumulation_steps", 8),
-        learning_rate=cfg.get("learning_rate", 2e-4),
-        lr_scheduler_type=cfg.get("lr_scheduler_type", "cosine"),
-        warmup_ratio=cfg.get("warmup_ratio", 0.05),
-        weight_decay=cfg.get("weight_decay", 0.01),
-        max_seq_length=cfg.get("max_seq_length", 1024),
-        packing=cfg.get("packing", False),
-        bf16=cfg.get("bf16", True),
-        fp16=cfg.get("fp16", False),
-        logging_steps=cfg.get("logging_steps", 20),
-        save_strategy=cfg.get("save_strategy", "steps"),
-        save_total_limit=cfg.get("save_total_limit", 3),
-        save_steps=cfg.get("save_steps", 500),
-        eval_strategy=cfg.get("eval_strategy", "epoch"),
-        report_to=cfg.get("report_to", "tensorboard"),
-        seed=cfg.get("seed", 42),
-        remove_unused_columns=False,
-    )
+def build_sft_config(cfg: dict) -> SFTConfig:
+    """Build SFTConfig from YAML cfg, only passing supported keys."""
+    supported = {
+        "output_dir", "num_train_epochs", "per_device_train_batch_size",
+        "gradient_accumulation_steps", "learning_rate", "lr_scheduler_type",
+        "warmup_ratio", "weight_decay", "max_length", "packing",
+        "bf16", "fp16", "logging_steps", "save_strategy", "save_total_limit",
+        "save_steps", "eval_strategy", "report_to", "seed",
+        "gradient_checkpointing", "gradient_checkpointing_kwargs",
+    }
+    kwargs = {k: v for k, v in cfg.items() if k in supported}
+    kwargs["output_dir"] = str(Path(cfg["output_dir"]) / "training")
+    kwargs["dataset_text_field"] = "text"
+    kwargs["max_length"] = cfg.get("max_seq_length", 1024)
+    kwargs["gradient_checkpointing"] = True
+    kwargs["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
+    kwargs["remove_unused_columns"] = False
+    return SFTConfig(**kwargs)
 
 
 def run_sft(config_path: str):
@@ -117,9 +113,6 @@ def run_sft(config_path: str):
     )
     model.config.use_cache = False  # required for gradient checkpointing
 
-    # Enable gradient checkpointing for memory savings
-    model.gradient_checkpointing_enable()
-
     logger.info("Applying LoRA...")
     lora_cfg = build_lora_config(cfg)
     model = get_peft_model(model, lora_cfg)
@@ -127,36 +120,33 @@ def run_sft(config_path: str):
 
     logger.info("Loading datasets...")
     train_ds = load_jsonl_dataset(cfg["dataset_paths"][0])
-    train_ds = train_ds.select(range(min(len(train_ds), 15000)))  # cap for speed
+    train_ds = train_ds.select(range(min(len(train_ds), cfg.get("max_train_samples", 15000))))
+    # Drop only columns that actually exist (some sources lack "language")
+    drop_cols = [c for c in ("instruction", "input", "output", "language") if c in train_ds.column_names]
     train_ds = train_ds.map(
         lambda ex: format_chat_messages(ex, tokenizer),
         batched=True,
-        remove_columns=["instruction", "input", "output", "language"],
+        remove_columns=drop_cols,
     )
 
     eval_ds = None
     if cfg.get("eval_dataset_path"):
         eval_ds = load_jsonl_dataset(cfg["eval_dataset_path"])
+        eval_drop = [c for c in ("instruction", "input", "output", "language") if c in eval_ds.column_names]
         eval_ds = eval_ds.map(
             lambda ex: format_chat_messages(ex, tokenizer),
             batched=True,
-            remove_columns=["instruction", "input", "output", "language"],
+            remove_columns=eval_drop,
         )
 
-    sft_cfg = SFTConfig(
-        **{k: v for k, v in cfg.items() if k not in {
-            "model_name_or_path", "dataset_paths", "eval_dataset_path",
-            "lora_r", "lora_alpha", "lora_dropout", "target_modules",
-        }},
-        dataset_text_field="text",
-    )
+    sft_cfg = build_sft_config(cfg)
 
     trainer = SFTTrainer(
         model=model,
         args=sft_cfg,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
 
     logger.info("Starting SFT training...")

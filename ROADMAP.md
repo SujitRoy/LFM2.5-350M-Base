@@ -354,6 +354,76 @@ python3.13 scripts/run_sft.py --config configs/sft_config.yaml
 
 ---
 
+## Appendix D: LEAP Finetune (Liquid's official toolkit) — RECOMMENDED
+
+[leap-finetune](https://github.com/Liquid4All/leap-finetune) is Liquid AI's repo for the full
+customization loop: data prep → SFT/DPO/GRPO (LoRA or full FT) → evals → **GGUF export**.
+It uses the correct LFM2 module names and supports `Lfm2ForCausalLM` GGUF conversion natively.
+
+### D.1 Setup
+```bash
+git clone https://github.com/Liquid4All/leap-finetune.git
+cd leap-finetune && uv sync        # or: uv sync --no-group cuda --group rocm
+```
+
+### D.2 Prepare data (messages format)
+```bash
+# alpaca-style {instruction, input, output} → {id, messages: [{role, content}]}
+python3.13 scripts/convert_to_leap_format.py \
+    --input data/validated/sft_train.jsonl \
+    --output data/leap/sft_hindi_hinglish_train.jsonl
+```
+
+### D.3 Train (job configs in `job_configs/`)
+```bash
+# 350M: fits any 8GB+ GPU (T4 free tier)
+uv run leap-finetune job_configs/sft_hindi_350m.yaml
+
+# 1.2B: needs ~16GB VRAM for bf16 LoRA
+uv run leap-finetune job_configs/sft_hindi_1.2b.yaml
+
+# Standalone eval of any checkpoint
+uv run leap-finetune eval job_configs/eval_hindi_standalone.yaml --output results.json
+```
+
+### D.4 Export GGUF quantized models
+```bash
+# Direct quants (no llama.cpp build needed): F16 BF16 F32 Q8_0
+uv run leap-finetune export <checkpoint_dir> --quant Q8_0
+
+# K-quants (need llama.cpp's llama-quantize binary):
+#   build llama.cpp once, then:
+uv run leap-finetune export <checkpoint_dir> \
+    --quant Q4_K_M --quant Q5_K_M \
+    --llama-cpp-dir /path/to/llama.cpp
+
+# LoRA adapter → GGUF (usable as --lora in llama.cpp):
+uv run leap-finetune export <adapter_dir> --base-model-path <base_model_dir>
+```
+
+Quant selection guide (350M/1.2B on-device):
+| Quant | Size (1.2B) | Use when |
+|---|---|---|
+| Q8_0 | ~1.3 GB | Near-lossless, RAM available |
+| Q6_K | ~1.1 GB | Good quality/space tradeoff |
+| Q5_K_M | ~0.9 GB | Balanced default for phones |
+| Q4_K_M | ~0.8 GB | Max compression, small quality loss |
+| F16 | ~2.4 GB | Reference / further quantization |
+
+### D.5 Verify GGUF locally (llama.cpp)
+```bash
+llama-cli -m model-Q4_K_M.gguf -p "<|im_start|>user\nनमस्ते, आप कैसे हैं?<|im_end|>\n<|im_start|>assistant\n"
+# or LM Studio / Ollama (both support LFM2 GGUFs)
+```
+
+### D.6 Why LEAP over our custom scripts?
+- Correct LFM2 LoRA module names (`self_attn.out_proj`, `conv.in_proj`, `feed_forward.w1`…)
+  — our earlier config used `o_proj`, which matches **zero** modules in LFM2.
+- Built-in eval suites (short_answer metric on Hindi val set)
+- Checkpoint resume, Ray/Modal/SLURM backends, HF + GGUF export
+
+---
+
 ## Timeline Summary
 
 ```

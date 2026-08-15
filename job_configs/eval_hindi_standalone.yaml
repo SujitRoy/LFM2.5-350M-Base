@@ -1,0 +1,15 @@
+# Standalone Hindi/Hinglish eval — runs against any checkpoint (LEAP Finetune)
+# Usage: uv run leap-finetune eval job_configs/eval_hindi_standalone.yaml --output results.json
+project_name: "hindi_eval"
+model_name: "LFM2.5-350M-Base"
+
+evals:
+  max_new_tokens: 256
+  benchmarks:
+    - name: "hindi_qa"
+      path: "data/leap/sft_val.jsonl"
+      metric: "short_answer"
+      limit: 20
+
+backend:
+  type: "hf"

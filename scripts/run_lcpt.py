@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Continued Pretraining (LCPT) for LFM2.5-350M on Hindi/Hinglish text.
+Continued Pretraining (LCPT) for LFM2.5 on Hindi/Hinglish text.
+Supports full fine-tune (350M) or LoRA (350M / 1.2B, for T4-class GPUs).
 Usage: python3.13 scripts/run_lcpt.py --config configs/lcpt_config.yaml
 """
 
@@ -24,24 +25,22 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def load_text_corpus(path: str | Path) -> list[str]:
+def load_text_corpus(path: str | Path) -> Dataset:
     """Load newline-separated text lines into a Dataset."""
     with open(path, encoding="utf-8") as f:
         lines = [line.strip() for line in f if line.strip()]
     return Dataset.from_dict({"text": lines})
 
 
-def chunk_text(dataset: Dataset, max_len: int) -> Dataset:
+def chunk_text(dataset: Dataset, tokenizer, max_len: int) -> Dataset:
     """Chunk long texts into max_len-token segments."""
-    from transformers import AutoTokenizer
-    tok = AutoTokenizer.from_pretrained("LiquidAI/LFM2.5-350M-Base")
     texts = []
     for doc in dataset["text"]:
-        encoded = tok.encode(doc, truncation=False)
+        encoded = tokenizer.encode(doc, truncation=False)
         for i in range(0, len(encoded), max_len):
-            chunk = encoded[i:i + max_len]
+            chunk = encoded[i : i + max_len]
             if len(chunk) >= 64:  # minimum useful chunk
-                texts.append(tok.decode(chunk))
+                texts.append(tokenizer.decode(chunk))
     return Dataset.from_dict({"text": texts})
 
 
@@ -50,24 +49,43 @@ def run_lcpt(config_path: str):
         cfg = yaml.safe_load(f)
     set_seed(cfg.get("seed", 42))
 
-    logger.info("Loading model and tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(cfg["model_name_or_path"])
+    model_name = cfg["model_name_or_path"]
+    max_len = cfg.get("max_seq_length", 1024)
+
+    logger.info(f"Loading model and tokenizer: {model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(
-        cfg["model_name_or_path"],
-        torch_dtype=torch.bfloat16,
+        model_name,
+        torch_dtype=torch.bfloat16 if cfg.get("bf16", True) else torch.float32,
         trust_remote_code=True,
     )
 
+    # Optional LoRA for memory-constrained LCPT (recommended for 1.2B on T4)
+    if cfg.get("lora", False):
+        from peft import LoraConfig, TaskType, get_peft_model
+
+        lora_cfg = LoraConfig(
+            r=cfg.get("lora_r", 16),
+            lora_alpha=cfg.get("lora_alpha", 32),
+            lora_dropout=cfg.get("lora_dropout", 0.05),
+            task_type=TaskType.CAUSAL_LM,
+            target_modules=cfg.get(
+                "target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]
+            ),
+        )
+        model = get_peft_model(model, lora_cfg)
+        model.print_trainable_parameters()
+
     logger.info("Loading corpus...")
     ds = load_text_corpus(cfg["dataset_path"])
-    ds = chunk_text(ds, cfg.get("max_seq_length", 1024))
+    ds = chunk_text(ds, tokenizer, max_len)
     logger.info(f"Corpus: {len(ds)} chunks")
 
     def tokenize_fn(examples):
         return tokenizer(
             examples["text"],
             truncation=True,
-            max_length=cfg.get("max_seq_length", 1024),
+            max_length=max_len,
             padding=False,
         )
 
@@ -98,16 +116,26 @@ def run_lcpt(config_path: str):
         args=train_cfg,
         train_dataset=ds,
         data_collator=data_collator,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
 
     logger.info("Starting LCPT training...")
     trainer.train()
 
-    out_dir = Path(cfg["output_dir"]) / "lcpt_merged"
-    trainer.save_model(str(out_dir))
-    tokenizer.save_pretrained(str(out_dir))
-    logger.info(f"✅ LCPT model saved to {out_dir}")
+    out_dir = Path(cfg["output_dir"]) / "lcpt_model"
+    if cfg.get("lora", False):
+        # Save adapter, then merge into base for downstream SFT
+        model.save_pretrained(str(out_dir))
+        logger.info(f"✅ LoRA adapter saved to {out_dir}")
+        merged = model.merge_and_unload()
+        merged_dir = Path(cfg["output_dir"]) / "lcpt_merged"
+        merged.save_pretrained(str(merged_dir))
+        tokenizer.save_pretrained(str(merged_dir))
+        logger.info(f"✅ Merged LCPT model saved to {merged_dir}")
+    else:
+        trainer.save_model(str(out_dir))
+        tokenizer.save_pretrained(str(out_dir))
+        logger.info(f"✅ LCPT model saved to {out_dir}")
 
 
 if __name__ == "__main__":

@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """
-Quick inference demo for the fine-tuned LFM2.5-350M-Hindi model.
+Quick inference demo for fine-tuned LFM2.5 Hindi/Hinglish models.
+Works with any size (350M / 1.2B).
 Usage:
-  python3.13 scripts/demo.py --model_path output/lfm25-350m-hindi-merged
+  python3.13 scripts/demo.py --model_path output/sft_lora/merged
   # or use LoRA adapter:
-  python3.13 scripts/demo.py --base LiquidAI/LFM2.5-350M-Base --adapter output/sft_lora/adapter
+  python3.13 scripts/demo.py --base LiquidAI/LFM2.5-1.2B-Base --adapter output/sft_lora/adapter
 """
 
 import argparse
-from pathlib import Path
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, PeftModel
+from peft import PeftModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 PROMPTS = [
-    "नमस्ते! मुझे हिंदी मendum सीखना हें।",
+    "नमस्ते! आप कैसे हैं?",
     "Bhai, mujhe Python sikha do basics se.",
     "India ke baare mein batao.",
     "Good morning! Aaj kya plan hai?",
-    "Ek choti si kahani likho mountain ke baare mein.",
+    "Ek choti si kahani likho pahad ke baare mein.",
 ]
 
 
