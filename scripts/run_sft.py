@@ -105,10 +105,25 @@ def run_sft(config_path: str):
             bnb_4bit_use_double_quant=True,
         )
 
+    # AMP rule: mixed-precision training (fp16/bf16 flags in TrainingArguments)
+    # needs the model loaded in FP32 — the scaler/cast wraps activations, while
+    # optimizer master weights must stay FP32. Loading weights directly in
+    # fp16/bf16 makes the gradients themselves half-precision and crashes
+    # GradScaler ("Attempting to unscale FP16 gradients").
+    # Exception: QLoRA, where 4-bit nf4 weights + bf16/fp16 compute is the norm.
+    if cfg.get("qlora", False):
+        dtype = torch.bfloat16 if cfg.get("bf16") else torch.float16
+    elif cfg.get("bf16", True):
+        dtype = torch.bfloat16
+    elif cfg.get("fp16", False):
+        dtype = torch.float32          # fp16 AMP: master weights in FP32
+    else:
+        dtype = torch.float32
+
     model = AutoModelForCausalLM.from_pretrained(
         cfg["model_name_or_path"],
         trust_remote_code=True,
-        torch_dtype=torch.bfloat16 if cfg.get("bf16") else torch.float16,
+        torch_dtype=dtype,
         quantization_config=quant_config,
     )
     model.config.use_cache = False  # required for gradient checkpointing

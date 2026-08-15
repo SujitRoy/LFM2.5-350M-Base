@@ -94,7 +94,14 @@ def run_lcpt(config_path: str):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     use_bf16 = cfg.get("bf16", True)
     use_fp16 = cfg.get("fp16", False)
-    dtype = torch.bfloat16 if use_bf16 else (torch.float16 if use_fp16 else torch.float32)
+    # AMP rule: mixed-precision training requires fp32 master weights.
+    # bf16 needs no GradScaler, so bf16 loading is safe; fp16 AMP must load fp32.
+    if use_fp16:
+        dtype = torch.float32
+    elif use_bf16:
+        dtype = torch.bfloat16
+    else:
+        dtype = torch.float32
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=dtype,
