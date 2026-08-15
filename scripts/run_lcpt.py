@@ -7,7 +7,11 @@ Usage: python3.13 scripts/run_lcpt.py --config configs/lcpt_config.yaml
 
 import argparse
 import logging
+import os
 from pathlib import Path
+
+# Must be set before the first CUDA allocation: reduces fragmentation on 16GB T4s
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 import yaml
@@ -129,6 +133,13 @@ def run_lcpt(config_path: str):
         model = get_peft_model(model, lora_cfg)
         model.print_trainable_parameters()
 
+    # Gradient checkpointing: trades ~30% speed for ~5-10x activation memory cut.
+    # Essential for full-FT 350M fp32 on a 16GB T4.
+    if cfg.get("gradient_checkpointing", True):
+        model.config.use_cache = False
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        logger.info("Gradient checkpointing enabled")
+
     logger.info("Loading corpus...")
     max_stories = cfg.get("lcpt_max_stories")
     ds = load_text_corpus(cfg["dataset_path"], max_stories=max_stories, seed=cfg.get("seed", 42))
@@ -160,6 +171,7 @@ def run_lcpt(config_path: str):
         weight_decay=cfg.get("weight_decay", 0.01),
         bf16=use_bf16,
         fp16=use_fp16,
+        gradient_checkpointing=cfg.get("gradient_checkpointing", True),
         logging_steps=cfg.get("logging_steps", 50),
         save_strategy=cfg.get("save_strategy", "epoch"),
         report_to=cfg.get("report_to", "tensorboard"),
