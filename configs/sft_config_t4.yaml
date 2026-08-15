@@ -1,0 +1,52 @@
+# LFM2.5-350M SFT — Google Colab T4 profile (fp16, T4 has no bf16 support)
+# Usage: python scripts/run_sft.py --config configs/sft_config_t4.yaml
+
+model_name_or_path: "output/lcpt/lcpt_model"   # start from LCPT output; or set to LiquidAI/LFM2.5-350M-Base to skip LCPT
+
+dataset_paths:
+  - "data/validated/sft_train.jsonl"
+eval_dataset_path: "data/validated/sft_val.jsonl"
+
+# Subsample for first run (full 527K is overkill for LoRA; curated ~40K is the sweet spot)
+max_train_samples: 40000
+
+# LoRA — correct LFM2 module names
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+target_modules:
+  - "self_attn.q_proj"
+  - "self_attn.k_proj"
+  - "self_attn.v_proj"
+  - "self_attn.out_proj"
+  - "feed_forward.w1"
+  - "feed_forward.w2"
+  - "feed_forward.w3"
+  - "conv.in_proj"
+  - "conv.out_proj"
+
+# Training
+num_train_epochs: 3
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 8
+learning_rate: 2.0e-4
+lr_scheduler_type: "cosine"
+warmup_ratio: 0.05
+weight_decay: 0.01
+max_seq_length: 1024
+packing: false
+
+# T4 = Turing: no bf16, use fp16
+bf16: false
+fp16: true
+
+# Output & logging
+output_dir: "output/sft_lora_t4"
+logging_steps: 20
+save_strategy: "steps"
+save_total_limit: 2
+save_steps: 500
+eval_strategy: "steps"
+eval_steps: 500
+report_to: "tensorboard"
+seed: 42

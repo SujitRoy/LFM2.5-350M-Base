@@ -1,0 +1,27 @@
+# LFM2.5-350M Continued Pretraining — Google Colab T4 profile (fp16)
+# Corpus: TinyStories-Hindi 400K stories (~1.5GB text, subsampled for a 1-2h run)
+# Usage: python scripts/run_lcpt.py --config configs/lcpt_config_t4.yaml
+
+model_name_or_path: "LiquidAI/LFM2.5-350M-Base"
+dataset_path: "data/raw/tinystories_hi_lcpt.txt"
+lcpt_max_stories: 60000      # ~1-1.5h on T4; raise to 200000 for a longer run
+
+lora: false                   # 350M fits full-FT on T4 with grad checkpointing
+
+num_train_epochs: 1
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 8
+learning_rate: 1.0e-4         # LCPT uses lower LR than SFT
+lr_scheduler_type: "cosine"
+warmup_ratio: 0.05
+weight_decay: 0.01
+max_seq_length: 1024
+
+bf16: false                   # T4 has no bf16
+fp16: true
+
+output_dir: "output/lcpt"
+logging_steps: 50
+save_strategy: "epoch"
+report_to: "tensorboard"
+seed: 42

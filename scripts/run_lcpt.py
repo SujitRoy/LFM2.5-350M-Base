@@ -54,9 +54,12 @@ def run_lcpt(config_path: str):
 
     logger.info(f"Loading model and tokenizer: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
+    use_bf16 = cfg.get("bf16", True)
+    use_fp16 = cfg.get("fp16", False)
+    dtype = torch.bfloat16 if use_bf16 else (torch.float16 if use_fp16 else torch.float32)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.bfloat16 if cfg.get("bf16", True) else torch.float32,
+        torch_dtype=dtype,
         trust_remote_code=True,
     )
 
@@ -70,7 +73,12 @@ def run_lcpt(config_path: str):
             lora_dropout=cfg.get("lora_dropout", 0.05),
             task_type=TaskType.CAUSAL_LM,
             target_modules=cfg.get(
-                "target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]
+                "target_modules",
+                [
+                    "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.out_proj",
+                    "feed_forward.w1", "feed_forward.w2", "feed_forward.w3",
+                    "conv.in_proj", "conv.out_proj",
+                ],
             ),
         )
         model = get_peft_model(model, lora_cfg)
@@ -78,6 +86,10 @@ def run_lcpt(config_path: str):
 
     logger.info("Loading corpus...")
     ds = load_text_corpus(cfg["dataset_path"])
+    max_stories = cfg.get("lcpt_max_stories")
+    if max_stories is not None and len(ds) > max_stories:
+        ds = ds.shuffle(seed=cfg.get("seed", 42)).select(range(max_stories))
+        logger.info(f"Subsampled corpus to {max_stories} stories")
     ds = chunk_text(ds, tokenizer, max_len)
     logger.info(f"Corpus: {len(ds)} chunks")
 
@@ -104,7 +116,8 @@ def run_lcpt(config_path: str):
         lr_scheduler_type=cfg.get("lr_scheduler_type", "cosine"),
         warmup_ratio=cfg.get("warmup_ratio", 0.05),
         weight_decay=cfg.get("weight_decay", 0.01),
-        bf16=cfg.get("bf16", True),
+        bf16=use_bf16,
+        fp16=use_fp16,
         logging_steps=cfg.get("logging_steps", 50),
         save_strategy=cfg.get("save_strategy", "epoch"),
         report_to=cfg.get("report_to", "tensorboard"),
